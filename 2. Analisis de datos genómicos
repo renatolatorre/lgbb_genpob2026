@@ -1,1 +1,160 @@
+# Análisis de datos genómicos y control de calidad
 
+En este tutorial veremos los pasos básicos para examinar y limpiar datos de secuenciación de siguiente generación antes de análisis más avanzados. TRabajaremos con archivos FASTQ, evaluaremos la calidad de lecturas, y removeremos adaptadores y bases de baja calidad.  
+El objetivo es entender por qué funciona cada paso y cómo las características de los datos influyen en los resultados de los siguientes análisis de genómica de poblaciones.
+
+## 1. Archivos FASTQ
+### 1.1 El formato FASTQ
+Los datos de secuenciación de Illumina se almacenan en archivos FASTQ. Cada lectura de secuenciación ocupa cuatro líneas:
+1. **Identificador de lecturas**
+Comienza con `@` y contiene información acerca del instrumento y la lectura.
+2. **Secuencia**
+Secuencia nucleotídica (A, C, G, T o N).
+3. **Separador**
+Un símbolo de suma `+`.
+4. **Calidades**
+Caracteres ASCII que codifican la calidad de cada base.  
+Por ejemplo,
+```bash
+zless -S /data/courses/course2026/course_files/S_86SA_R1.fastq.gz
+```
+Contar cuántas lecturas hay en el archivo
+```bash
+zgrep -c "^@" /data/courses/course2026/course_files/S_86SA_R1.fastq.gz
+```
+Examinar la distribución de longitudes de lectura
+```bash
+zcat /data/courses/course2026/course_files/S_86SA_R1.fastq.gz | awk '(NR%4==2){print length($0)}' | sort | uniq -c
+```
+### 1.2 ¿Cómo interpretamos los caracteres de calidad?
+- Identificar el caracter ASCII
+- Identificar el puntaje Q correspondiente (número ASCII - 33)
+- Calcular la probabilidad estimada. Q = -10log10(P). P = 10^(-Q/10)
+
+## 2. Evaluación de la calidad con FastQC
+FastQC permite tener un primer vistazo a la calidad de secuenciación y otras características de los datos. Para cada archivo de salida, se reporta:
+- Puntajes de calidad por base
+- Contenido de GC
+- Distribución de longitudes de secuencias
+- Contaminación por adaptadores
+- Secuencias sobrerrepresentadas
+
+Usaremos FastQC en las lecturas de secuenciación usando un script de slurm. Usando `nano fastqc`, modificar el siguiente contenido cambiando los XXXXXXXX por el nombre de usuario (neltuma, puma, etc.)
+```bash
+#!/bin/bash
+#SBATCH --job-name fastqc
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=1:30:00
+#SBATCH -p wholenode
+#SBATCH -o xxxxxxxx
+#SBATCH -e xxxxxxxx
+
+module load fastqc
+
+fastqc \
+  /s_R1.fastq.gz \
+  /s_R2.fastq.gz \
+  -o /YXXX/02_sequencing_dataquality
+```
+Sometemos el proceso
+```
+sbatch fastqc.sh
+```
+Al finalizar, descargar y abrir el reporte en HTML en un navegador.
+
+## 3. Trimado y remoción de adaptadores
+AdapterRemoval es una herramienta flexible diseñada específicamente para remover adaptadores de secuenciación y bases de baja calidad, así como para unir lecturas pareadas con un nivel de sobrelape.  
+Nuevamente, creamos un script slurm `nano adapterremoval.sh` modificando el contenido para ajustarlo a la información de cada grupo.
+```bash
+#!/bin/bash
+#SBATCH --job-name adapterremoval
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=2:00:00
+#SBATCH -p wholenode
+#SBATCH -o USERNAME/logs/ar.o%j
+#SBATCH -e SERNAME/logs/ar.e%j
+
+module load biocontainers/default
+module load adapterremoval
+
+AdapterRemoval \
+  --file1 /fastq/SRR957824_500K_R1.fastq.gz \
+  --file2 /fastq/SRR957824_500K_R2.fastq.gz \
+  --basename /ty/SRR957824_500K \
+  --trimns \
+  --trimqualities \
+  --minquality 20 \
+  --minlength 30 \
+  --gzip
+```
+Sometemos el proceso
+```bash
+sbatch adapterremoval.sh
+```
+Se recomienda revisar la calidad luego de procesar las lecturas.
+## 4. Control de calidad para lecturas largas
+Herramientas como FastQC no están diseñadas para datos de lecturas largas, ya que estas tienen distintos perfiles de errores, longitudes de lectura distintos, y artefactos específicos para la plataforma (ONT / PacBio). POr este motivo, los datos de lecturas largas necesitan herramientas de control de calidad distintos.
+
+### 4.1 Métricas de calidad en lecturas largas
+Para el control de calidad de lecturas largas, nos concentramos en:
+- Distribución de longitud de lecturas
+- Distribución de calidad de lecturas
+- Rendimiento total
+- N50
+- Contenido de GC
+Comenzamos explorando los archivos FASTQ
+```bash
+zless long_Reads.fastq.gz
+```
+Al igual que para lecturas cortas, los encabezados de ONT incluyen información sobre la lectura, la celda de flujo y la corrida de secuenciación.  
+¿Cuántas lecturas tiene el archivo de ejemplo? ¿Cómo es la distribución de longitudes de lectura?
+
+### 4.2 Control de calidad de lecturas largas
+NanoPlot es una herramienta de control de calidad comúnmente usada para lecturas largas. Genera estadísticas de resumen y gráficas específicas para este tipo de datos.  
+Creamos un script slurm `nano nanoplot.sh` y reemplazamos la información con los datos de nuestro grupo.
+```
+#!/bin/bash
+#SBATCH --job-name nanoplot
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=1:30:00
+#SBATCH -o /_USERNAME/logs/nanoplot.o%j
+#SBATCH -e /sRNAME/logs/nanoplot.e%j
+#SBATCH -p wholenode
+
+module load biocontainers/default
+module load nanoplot
+
+NanoPlot \
+  --fastq /sa/long_reads/example_ont.fastq.gz \
+  --outdir s03_longread_qc \
+  --threads 4
+```
+Descargar los archivos de resultado e inspeccionar el reporte en HTML.
+### 4.3 Trimado y filtrado de lecturas largas
+Para lecturas de ONT, usaremos la herramienta Porechop para detectar y eliminar adaptadores, barcodes, o lecturas quiméricas. Luego, NanoFilt servirá para filtrar las lecturas resultantes según un rango de longitudes y calidades.
+```
+#!/bin/bash
+#SBATCH --job-name porechop
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --time=1:30:00
+#SBATCH -o /logs/porechop.o%j
+#SBATCH -e /alogs/porechop.e%j
+#SBATCH -p wholenode
+
+module load biocontainers/default
+module load porechop
+module load nanofilt
+
+porechop \
+  -i hared_data/long_reads/example_ont.fastq.gz \
+  -o _longread_qc/example_ont_porechop.fastq.gz \
+  --threads 4
+zcat smple_ont_porechop.fastq.gz \
+| NanoFilt -q 9 -l 500 \
+| gzip > sqc/example_ont_filtered.fastq.gz
+```
+Se recomienda revisar la calidad luego de procesar las lecturas.
