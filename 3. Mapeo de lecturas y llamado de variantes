@@ -1,0 +1,138 @@
+# Mapeo de lecturas y llamado de variantes
+
+## 1. Mapeo de lecturas
+El sustrato para los estudios genómico-poblacionales son las variantes genéticas a lo largo del genoma en varios individuos de una o más poblaciones. Una vez que tenemos datos de secuenciación de alta calidad, el siguiente paso es mapear las lecturas a un genoma de referencia. Este proceso incluye varios pasos intermedios, como el control de calidad y filtrado de las lecturas y alineamientos.  
+Primero creamos la carpeta de trabajo y copiamos el material:
+```bash
+mkdir 3-mapeo_variantes
+cd 3-mapeo_variantes
+cp /home/course/course2026/course_files/3-mapeo_variantes/* .
+```
+Usaremos un script para mapear lecturas pareadas a un genoma de referencia `1-mapeo.sh`. En el contenido cambiar los USERNAME a los nombres de grupo:
+```bash
+#!/bin/bash
+
+# Nombre del proceso:
+#SBATCH --job-name=1-mapeo
+
+# Proyecto:
+#SBATCH --account=USERNAME
+#SBATCH --partition=standard # Nombre de la partición
+
+# Recursos:
+#SBATCH --time=01:00:00 # Límite de tiempo de corrida
+#SBATCH --cpus-per-task=1 # Límite de CPUs para cada tarea en tareas de múltiples instancias
+#SBATCH --mem=2G # Límite de memoria
+
+# Archivos de salida
+#SBATCH --output=/data/courses/course2026/USERNAME/logs/primerjob_o%j # Nombre del archivo de salida stdout
+#SBATCH --error=/data/courses/course2026/USERNAME/logs/primerjob_e%j # Nombre del archivo de error stderr
+
+# Ambiente de trabajo
+set -o errexit
+set -o nounset
+
+module --quiet purge
+module load bwa
+module load samtools
+module list
+
+# Mensaje informativo
+echo "Job iniciado en:"
+date
+echo "Nodo:"
+hostname
+
+# Comandos a ejecutar
+bwa mem /home/courses/course2026/course_files/ppa_v2.asm.fasta /home/courses/course2026/course_files/reads_*.fasta \
+| samtools view -h -b -q 30 \
+| samtools sort -o HUSM_ICA32.bam
+
+echo "Job finalizado en:"
+date
+```
+El script usa el algoritmo de alineamiento mem para alinear lecturas según su similitud, luego usando samtools se filtran alineamientos con un mínimo de calidad (MAPQ) de 30 (0.999 de probabilidad de un match correcto) y se ordenan según las coordenadas en el cromosoma.  
+```bash
+sbatch 1-mapeo.sh
+```
+El resultado se guardó en formato binario `bam`, lo inspeccionamos de la siguiente manera:
+```bash
+module load
+samtools view -S HUSM_ICA32.bam | less -S
+```
+![image](https://samformat.pages.dev/images/sam_format_annotated_example.5108a0cd.jpg)
+La información de alineamiento de cada lectura se resume en un decimal FLAG, los cuales pueden entenderse [aquí](https://samformat.pages.dev/sam-format-flag). También podemos obtener un resumen global usando:
+```bash
+samtools flagstat HUSM_ICA32.bam
+```
+La columna CIGAR (Concise Idiosyncratic Gapped Alignment Report), es una manera comprimida de representar las características del alineamiento de cada lectura, desde la primera posición de izquierda a derecha. Se mostrará en una sola línea los match (M), mismatch (X), deleciones (D) e inserciones (I).  
+Algunos parámetros importantes para evaluar el éxito de alineamiento son:  
+- Número de alineamientos en total
+- Número de alineamientos únicos
+- Fracción de lecturas mapeadas con respecto al total
+- Porcentaje de duplicidad de lecturas
+
+### Deduplicación de lecturas
+Las lecturas duplicadas pueden detectarse después del mapeo al genoma de referencia.
+```bash
+sbatch 2-duplicados.sh
+
+java -jar picard.jar MarkDuplicates I=HUSM_ICA32.bam O=HUSM_ICA32.dedup.bam M=HUSM_ICA32.dedup.metrics
+```
+> [!IMPORTANT]
+> :exclamation: Según las métricas, ¿cuál es el porcentaje de duplicidad de la muestra HUSM_ICA32?
+
+```bash
+samtools flagstat HUSM_ICA32.dedup.bam
+```
+> [!IMPORTANT]
+> :exclamation: ¿Qué diferencias hay en las estadísticas de alineamiento con respecto al archivo original?
+
+### Profundidad y cobertura de mapeo
+La profundidad es el número promedio de lecturas que cubren una posición en la secuencia de referencia. En cambio, la cobertura es el porcentaje de la secuencia de referencia secuenciada por lecturas a una determinada profundidad.
+
+![image](https://i.sstatic.net/hZqvF.png)
+
+Evaluamos la profundidad y amplitud de cobertura usando el script `3-cobertura.sh`.
+```bash
+sbatch 3-cobertura.sh
+
+samtools depth /home/courses/course2026/USERNAME/3-mapeo_variantes/HUSM_ICA32.dedup.bam > %j.HUSM_ICA32_depths.txt
+samtools depth /home/courses/course2026/USERNAME/3-mapeo_variantes/HUSM_ICA32.dedup.bam | awk '{sum += $3} END {print sum/NR}' > %j.HUSM_ICA32_avgdepth.txt
+samtools depth /home/courses/course2026/USERNAME/3-mapeo_variantes/HUSM_ICA32.dedup.bam | awk '{$3 >= 1}' | wc -l | awk '{print $1/400000000}' > %j.HUSM_ICA32_breadthdepth.txt
+samtools depth /home/courses/course2026/USERNAME/3-mapeo_variantes/HUSM_ICA32.dedup.bam | awk '{$3 >= 10}' | wc -l | awk '{print $1/400000000 * 100}' > %j.HUSM_ICA32_breadthdepthmin10.txt
+```
+Obtenemos la profundidad promedio y el porcentaje de la secuencia de referencia que es cubierto por al menos una lectura:
+```bash
+cat HUSM_ICA32_avgdepth.txt
+cat HUSM_ICA32_breadthdepth.txt
+```
+> [!IMPORTANT]
+> :exclamation: ¿Cuál es la profundidad promedio? ¿Cuánto del genoma aproximadamente se ha secuenciado y mapeado exitósamente?
+
+Notar que la profundidad se distribuye heterogéneamente a lo largo de la secuencia de referencia.
+```bash
+less -S HUSM_ICA32_depths.txt
+```
+Por lo tanto, la amplitud de cobertura con una profundidad considerable es diferente:
+```bash
+HUSM_ICA32_breadthdepthmin10.txt
+```
+> [!IMPORTANT]
+> :exclamation: ¿Cuánto del genoma se cubre por al menos 10 lecturas por sitio? Intentar con 20X, 30X y con la profundidad promedio.
+
+### Visualización
+Visualizamos nuestros alineamientos usando herramientas interactivas como IGV (Integrated Genome Viewer). Se puede encontrar para descargar [aquí](https://igv.org/doc/desktop/#DownloadPage). Este requiere de un sistema operativo con interfaz gráfica.
+
+IGV funciona con una secuencia de referencia y uno o múltiples "tracks", que pueden ser alineamientos, genes, variantes, profundidades, etc. Los alineamientos y la secuencia de referencia deben ser indexados para cargarse a IGV
+```bash
+samtools index HUSM_ICA32.dedup.bam HUSM_ICA32.dedup.bam.bai
+```
+Copiar los archivos a su computadora local:
+```bash
+scp USERNAME@161.132.238.252:/home/USERNAME/3-mapeo_variantes/HUSM_ICA32.bam* .
+scp USERNAME@161.132.238.252:/home/courses/course2026/course_files/ppa_v2.asm.fasta* .
+```
+En IGV, cambiar el genoma de referencia a ppa_v2.asm.fasta y luego cargar el archivo de alineamiento.
+
+## 2. Estimación de genotipos y variantes
